@@ -13,6 +13,7 @@ contract ETHDelegatedStaking {
     address public owner;
     IValidator public validator;
     uint256 public totalStaked;
+    bool private locked;
 
     struct Stake {
         uint256 amount;
@@ -21,6 +22,7 @@ contract ETHDelegatedStaking {
 
     mapping(address => Stake) public stakes;
     address[] public activeUsers;
+    mapping(address => uint256) private activeUserIndex;
 
     event Staked(address indexed user, uint256 amount);
     event Withdrawn(address indexed user, uint256 amount);
@@ -34,15 +36,23 @@ contract ETHDelegatedStaking {
         _;
     }
 
-    constructor(address _validator) {
-        owner = msg.sender;
-        validator = IValidator(_validator);
+    modifier nonReentrant() {
+        require(!locked, "Reentrant call detected!");
+        locked = true;
+        _;
+        locked = false;
     }
 
-    function stake() external payable {
+    constructor() {
+        owner = msg.sender;
+    }
+
+    function stake() external payable nonReentrant {
         require(msg.value > 0, "Stake amount must be greater than zero");
+        require(address(validator) != address(0), "Validator not set");
 
         if (stakes[msg.sender].amount == 0) {
+            activeUserIndex[msg.sender] = activeUsers.length;
             activeUsers.push(msg.sender);
         }
 
@@ -55,7 +65,8 @@ contract ETHDelegatedStaking {
         emit Staked(msg.sender, msg.value);
     }
 
-    function reinvestRewards() external onlyOwner {
+    function reinvestRewards() external onlyOwner nonReentrant {
+        require(address(validator) != address(0), "Validator not set");
         uint256 claimed = validator.claimRewards();
         require(claimed > 0, "No rewards to reinvest");
 
@@ -74,23 +85,28 @@ contract ETHDelegatedStaking {
         emit DelegatedToValidator(claimed);
     }
 
-    function withdraw() external {
+    function withdraw() external nonReentrant {
         uint256 stakedAmount = stakes[msg.sender].amount;
         require(stakedAmount > 0, "No stake to withdraw");
 
         stakes[msg.sender].amount = 0;
         totalStaked -= stakedAmount;
 
-        for (uint256 i = 0; i < activeUsers.length; i++) {
-            if (activeUsers[i] == msg.sender) {
-                activeUsers[i] = activeUsers[activeUsers.length - 1];
-                activeUsers.pop();
-                break;
-            }
-        }
+        uint256 index = activeUserIndex[msg.sender];
+        uint256 lastIndex = activeUsers.length - 1;
 
-        validator.undelegate(stakedAmount);
-        emit UndelegatedFromValidator(stakedAmount);
+        if (index != lastIndex) {
+            address lastUser = activeUsers[lastIndex];
+            activeUsers[index] = lastUser;
+            activeUserIndex[lastUser] = index;
+        }
+        activeUsers.pop();
+        delete activeUserIndex[msg.sender];
+
+        if (address(validator) != address(0)) {
+            validator.undelegate(stakedAmount);
+            emit UndelegatedFromValidator(stakedAmount);
+        }
 
         payable(msg.sender).transfer(stakedAmount);
         emit Withdrawn(msg.sender, stakedAmount);
@@ -98,6 +114,8 @@ contract ETHDelegatedStaking {
 
     function setValidator(address _newValidator) external onlyOwner {
         require(_newValidator != address(0), "Invalid validator address");
+        require(isContract(_newValidator), "Validator must be a contract");
+
         emit ValidatorUpdated(address(validator), _newValidator);
         validator = IValidator(_newValidator);
     }
@@ -115,5 +133,13 @@ contract ETHDelegatedStaking {
 
     receive() external payable {
         emit FundsReceived(msg.sender, msg.value);
+    }
+
+    fallback() external payable {
+        emit FundsReceived(msg.sender, msg.value);
+    }
+
+    function isContract(address account) internal view returns (bool) {
+        return account.code.length > 0;
     }
 }

@@ -20,7 +20,7 @@ contract MockValidator {
     }
 
     function claimRewards() external returns (uint256) {
-        uint256 rewards = totalDelegated / 10;
+        uint256 rewards = (totalDelegated * 10) / 100;
         emit RewardsClaimed(msg.sender, rewards);
         return rewards;
     }
